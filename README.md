@@ -86,6 +86,59 @@ The query validates a single NAD83 point and transforms it into WGS84 (`ST_Trans
 
 4. When allowing the harness to run indefinitely (`make test ARGS="--duration 0"`), restart DB2 after the crash or re-run `make test` (the harness tears down the container automatically).
 
+## Observed Failure Pattern
+
+The behaviour is consistently reproducible on a fresh SAMPLE database with default configuration values.
+
+**Reproduction summary**
+
+- `make test ARGS="--threads 1 --pool-size 1 --duration 30"` completes without errors (≈444 iterations in 30 s). 
+- `make test ARGS="--threads 2 --pool-size 2 --duration 300"` fails after ~7 s/≈200 iterations with:
+  ```
+  SQL0430N  User defined function "DB2GSE.GSETRANSFORM" (specific name "GSETRANSFORM") has abnormally terminated.  SQLSTATE=38503 SQLCODE=-430
+  SQL0443N  Routine "*RANSFORM" ... diagnostic text "GSE3015N  Reason code = "-2901".  Transformation to SRS "4".  SQLSTATE=38SUC
+  ```
+  These errors also appear in the container console (`docker logs -f db2-st-transform`) and in `db2diag.log` inside the container.
+
+**Diagnostic log excerpts**
+
+`/database/config/db2inst1/sqllib/db2dump/DIAG0000/db2diag.log` captures a repeating sequence of non-fatal assertions from the ESRI spatial library immediately before DB2 terminates the UDF:
+
+```
+2025-10-15-01.02.55.529891+000 I430009E2008 LEVEL: Severe
+ASSERTION EXPRESSION: Invalid block eye-catcher (0xDEAD055E) found at:
+SOURCE FILENAME: /supp/oemtools/ALL/spatial_esri/base/db2/gseOss.cpp
+CALLSTCK:
+  ... pe_factory_xtlist_cache_unload
+  pe_factory_xtlist_cache_uninit
+  pe_factory_uninit
+  SgShapeChangeCoordRef_with_geotran
+  gseTransformCS
+  sqloInvokeUDF
+  sqlriFetch
+```
+
+Additional assertions in the same burst show:
+
+- `Invalid pad type (0x2AAD)`
+- `Invalid pad type (0x95A667EB)`
+- `Freeing freed memory found at:`
+
+Seconds later, DB2 logs `ADM14005E` (“An unfenced User Defined Function (UDF) was abnormally terminated… It is recommended that DB2 server instance is stopped and restarted as soon as possible.”) and triggers First Occurrence Data Capture.
+
+**FODC / trap evidence**
+
+- The crash bundle lives under `/database/config/db2inst1/sqllib/db2dump/DIAG0000/FODC_AppErr_<timestamp>_<pid>_<eduid>_000/` (example: `FODC_AppErr_2025-10-15-00.09.56.099839_52256_149_000/`).
+- `52256.149.000.trap.txt` inside that directory shows the engine received SIGSEGV at address `0x00000200AABBCCDD`. DB2 uses `0xAABBCCDD` as the sentinel for “already freed” memory, proving a double free.
+- The captured stack trace matches the diagnostic log: `pe_database_uninit → pe_factory_xtlist_cache_unload → pe_factory_xtlist_cache_uninit → SgShapeChangeCoordRef_with_geotran → gseTransformCS → sqloInvokeUDF`.
+
+**Interpretation**
+
+- `DB2GSE.ST_Transform` is deployed as an unfenced UDF (check `syscat.functions`). An unfenced failure propagates into the db2sysc process.
+- The ESRI spatial extender maintains shared state in the `pe_factory` cache. When multiple agents call `ST_Transform` concurrently, two threads tear down the same cache. The second free trips the OSS heap guard (`Invalid block eye-catcher`, `Invalid pad type`, `Freeing freed memory`).
+- No DB2 configuration parameter or environment tweak is involved—the SAMPLE database runs with default CFG values (`db2 get db cfg for SAMPLE`). The issue is a thread-safety bug in the spatial extender (`gseOss.cpp`), not an application misuse.
+- Until IBM delivers a fix, the only safe workaround is to serialize ST_Transform calls (single worker / connection). Any higher concurrency eventually produces the GSE3015N/SQL0430N errors followed by the assertion/segfault sequence and requires a DB2 instance restart.
+
 ## Cleanup
 
 ```bash
