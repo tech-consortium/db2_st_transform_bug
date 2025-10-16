@@ -78,6 +78,7 @@ class DB2ContainerManager:
                 self.config.image,
             ]
         )
+        self.logger.info("Launching Db2 image %s", self.config.image)
         try:
             result = _run(command, capture_output=True)
             self.logger.debug("docker run output: %s", result.stdout.strip())

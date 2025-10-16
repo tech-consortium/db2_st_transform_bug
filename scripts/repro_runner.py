@@ -59,6 +59,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="DB2 docker image to run (default: icr.io/db2_community/db2)",
     )
     parser.add_argument(
+        "--db2level",
+        help="Convenience shortcut for selecting the Db2 Community Edition image tag (for example 11.5.0.9)."
+        " Overrides --image with icr.io/db2_community/db2:<db2level>.",
+    )
+    parser.add_argument(
         "--port",
         type=int,
         default=50000,
@@ -85,6 +90,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Set the logging verbosity (default: INFO)",
     )
+    parser.add_argument(
+        "--ibmcasenumber",
+        help="Optional IBM support case number for logging and support-bundle labeling.",
+    )
     return parser.parse_args(argv)
 
 
@@ -102,6 +111,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
     logger = logging.getLogger("repro")
+
+    if args.db2level:
+        requested_image = f"icr.io/db2_community/db2:{args.db2level}"
+        if args.image != requested_image:
+            if args.image != "icr.io/db2_community/db2":
+                logger.warning(
+                    "Overriding explicit --image %s with --db2level %s (%s)",
+                    args.image,
+                    args.db2level,
+                    requested_image,
+                )
+            args.image = requested_image
+        logger.info("Using Db2 level %s (image %s)", args.db2level, args.image)
+
+    if args.ibmcasenumber:
+        logger.info("IBM case number: %s", args.ibmcasenumber)
 
     try:
         ensure_docker_available()
@@ -161,12 +186,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         result = hammer.run()
         logger.info(
-            "Hammer finished after %.2fs and %s iterations",
+            "Hammer finished after %.2fs (%s attempts: %s successes, %s failures)",
             result.duration,
             result.iterations,
+            result.successes,
+            result.failures,
         )
-        if result.failure:
-            logger.error("Encountered failure during run: %s", result.failure)
+        if result.failures:
+            if result.failure:
+                logger.error("First failure encountered: %s", result.failure)
+            logger.error("Encountered %s failures during run.", result.failures)
             return 1
         if max_seconds:
             logger.warning(

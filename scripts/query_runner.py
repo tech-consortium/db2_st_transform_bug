@@ -21,6 +21,8 @@ class HammerResult:
     iterations: int
     duration: float
     failure: Optional[BaseException]
+    successes: int
+    failures: int
 
 
 class ConnectionPool:
@@ -105,7 +107,9 @@ class QueryHammer:
         self.max_iterations = max_iterations
         self.max_seconds = max_seconds
         self.logger = logger or logging.getLogger(__name__)
-        self._total_iterations = 0
+        self._total_attempts = 0
+        self._successes = 0
+        self._failures = 0
         self._failure: Optional[BaseException] = None
         self._lock = threading.Lock()
 
@@ -117,31 +121,41 @@ class QueryHammer:
 
         def worker(worker_id: int) -> None:
             local_iterations = 0
+            local_failures = 0
             while not stop_event.is_set():
-                if self._time_exceeded(start):
-                    stop_event.set()
-                    break
-                if self._iterations_exceeded():
+                if self._time_exceeded(start) or self._attempt_limit_reached():
                     stop_event.set()
                     break
                 try:
                     conn = self.pool.acquire(timeout=1)
                 except queue.Empty:
                     continue
+                limit_hit = False
+                total = 0
                 try:
+                    if self._time_exceeded(start) or self._attempt_limit_reached():
+                        stop_event.set()
+                        break
                     stmt = ibm_db.exec_immediate(conn, self.sql)
                     try:
                         ibm_db.fetch_tuple(stmt)
                     finally:
                         ibm_db.free_stmt(stmt)
                     local_iterations += 1
-                    total = self._increment_iterations()
+                    total, limit_hit = self._register_attempt(success=True, failure_exc=None)
                     if local_iterations % 100 == 0:
                         self.logger.debug("Worker %s completed %s iterations (total %s)", worker_id, local_iterations, total)
                 except Exception as exc:  # pragma: no cover - failure path depends on DB2 bug
-                    self.logger.error("Worker %s encountered failure after %s iterations: %s", worker_id, local_iterations, exc)
-                    self._record_failure(exc)
-                    stop_event.set()
+                    local_failures += 1
+                    total, limit_hit = self._register_attempt(success=False, failure_exc=exc)
+                    self.logger.error(
+                        "Worker %s encountered failure after %s successes (%s total attempts, %s local failures): %s",
+                        worker_id,
+                        local_iterations,
+                        total,
+                        local_failures,
+                        exc,
+                    )
                     try:
                         self.pool.invalidate(conn)
                         conn = None
@@ -150,6 +164,8 @@ class QueryHammer:
                 finally:
                     if conn:
                         self.pool.release(conn)
+                if limit_hit:
+                    stop_event.set()
 
         for idx in range(self.threads):
             thread = threading.Thread(target=worker, args=(idx,), name=f"query-hammer-{idx}", daemon=True)
@@ -160,29 +176,34 @@ class QueryHammer:
             thread.join()
 
         duration = time.time() - start
-        return HammerResult(iterations=self._total_iterations, duration=duration, failure=self._failure)
+        return HammerResult(
+            iterations=self._total_attempts,
+            duration=duration,
+            failure=self._failure,
+            successes=self._successes,
+            failures=self._failures,
+        )
 
-    def _increment_iterations(self) -> int:
-        """Atomically increment the global iteration counter."""
+    def _register_attempt(self, *, success: bool, failure_exc: Optional[BaseException]) -> tuple[int, bool]:
+        """Record a single attempt and return the new total and whether the limit was reached."""
         with self._lock:
-            self._total_iterations += 1
-            if self.max_iterations and self._total_iterations >= self.max_iterations:
-                # Signal the stop condition by returning the limit
-                pass
-            return self._total_iterations
+            self._total_attempts += 1
+            if success:
+                self._successes += 1
+            else:
+                self._failures += 1
+                if failure_exc and not self._failure:
+                    self._failure = failure_exc
+            limit_hit = bool(self.max_iterations and self._total_attempts >= self.max_iterations)
+            total = self._total_attempts
+        return total, limit_hit
 
-    def _record_failure(self, exc: BaseException) -> None:
-        """Persist the first failure observed by any worker thread."""
-        with self._lock:
-            if not self._failure:
-                self._failure = exc
-
-    def _iterations_exceeded(self) -> bool:
-        """Return True once the configured iteration limit has been met."""
+    def _attempt_limit_reached(self) -> bool:
+        """Return True once the configured attempt limit has been met."""
         if not self.max_iterations:
             return False
         with self._lock:
-            return self._total_iterations >= self.max_iterations
+            return self._total_attempts >= self.max_iterations
 
     def _time_exceeded(self, start: float) -> bool:
         """Return True once the configured time budget has been used."""

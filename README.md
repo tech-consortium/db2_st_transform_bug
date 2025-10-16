@@ -35,6 +35,11 @@ You can pass additional arguments to the harness via the `ARGS` variable:
 make test ARGS="--threads 16 --pool-size 24 --log-level DEBUG"
 ```
 
+Additional helpful switches include:
+
+- `--db2level 11.5.0.9` to test against a specific Db2 Community Edition tag (maps to `icr.io/db2_community/db2:11.5.0.9`).
+- `--ibmcasenumber TS020534809` to annotate logs for a particular IBM support ticket.
+
 Run `python -m scripts.repro_runner --help` for the full list of supported options, including overriding the image tag, reusing an existing container, and keeping the container alive for post-mortem inspection.
 
 ## Target SQL
@@ -145,3 +150,24 @@ Seconds later, DB2 logs `ADM14005E` (“An unfenced User Defined Function (UDF) 
 make container-stop   # stop and remove just the container
 make clean            # remove the container and the virtual environment
 ```
+
+## Collecting Support Data
+
+To gather a fresh reproduction together with a `db2support` bundle for IBM, run:
+
+```bash
+make support-bundle CASE=TS020534809 LEVEL=11.5.0.9
+```
+
+The target reproduces the crash using the configured thread/pool settings, executes
+`db2support` with full collection (`-F`) and the relevant FODC symptom (`-fodc AppErr`),
+and copies the resulting archive and container logs into
+`docs/ibm_case-<case#>-<level>-<timestamp>/` (for example `docs/ibm_case-TS020534809-11.5.0.9-20251015T120000Z/`).
+
+This repository currently contains a captured bundle for case `TS020534809` (collected
+prior to the new naming convention) in `docs/ibm_case-TS020534809/`.
+
+## Coordinated Disclosure
+
+A draft vulnerability report (suitable for IBM PSIRT submission and CVE coordination) lives at `docs/CVE-report-draft.md`.  
+See `SECURITY.md` for the responsible disclosure policy and IBM contact details.
