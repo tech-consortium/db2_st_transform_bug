@@ -320,22 +320,9 @@ def capture_trace(args: argparse.Namespace) -> int:
     dump_path = f"{container_trace_dir}/db2trc.dmp"
     flow_path = f"{container_trace_dir}/db2trc.flw"
     fmt_path = f"{container_trace_dir}/db2trc.fmt"
-
-    container_epoch_start = _container_epoch(manager, logger=logger)
-    latest_known_fodc = _latest_fodc_directory(manager)
-
     trace_started = False
-    try:
-        _run_in_container(manager, f"mkdir -p {shlex.quote(container_trace_dir)}", logger=logger)
-        _run_in_container(
-            manager,
-            f"cd {shlex.quote(container_trace_dir)} && db2trc on -t -f {shlex.quote(dump_path)}",
-            logger=logger,
-        )
-        trace_started = True
-    except subprocess.CalledProcessError as exc:
-        logger.error("Failed to start db2trc: %s", exc.stderr.strip() if exc.stderr else exc)
-        return 3
+    container_epoch_start = int(time.time())
+    latest_known_fodc = _latest_fodc_directory(manager)
 
     connections = []
     stop_event = threading.Event()
@@ -351,6 +338,21 @@ def capture_trace(args: argparse.Namespace) -> int:
                 stop_event.set()
                 raise
             connections.append(conn)
+
+        container_epoch_start = _container_epoch(manager, logger=logger)
+        latest_known_fodc = _latest_fodc_directory(manager)
+
+        try:
+            _run_in_container(manager, f"mkdir -p {shlex.quote(container_trace_dir)}", logger=logger)
+            _run_in_container(
+                manager,
+                f"cd {shlex.quote(container_trace_dir)} && db2trc on -t -f {shlex.quote(dump_path)}",
+                logger=logger,
+            )
+            trace_started = True
+        except subprocess.CalledProcessError as exc:
+            logger.error("Failed to start db2trc: %s", exc.stderr.strip() if exc.stderr else exc)
+            return 3
 
         threads = []
         for idx, conn in enumerate(connections):
