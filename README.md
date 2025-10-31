@@ -8,9 +8,79 @@ This repository contains a self-contained harness that launches the IBM DB2 Comm
   - On macOS, ensure Docker Desktop supports `linux/amd64`; the harness will automatically set the platform flag.
 - Python 3.9+ and `make`
 
+### Additional Windows Prerequisites
+
+The following tools are required when running on Windows:
+
+1. **Python 3.9+**
+   - Download and install from [python.org](https://www.python.org/downloads/)
+   - During installation, check "Add Python to PATH"
+   - Verify with: `python --version`
+
+2. **GNU Make**
+   - Install using [Chocolatey](https://chocolatey.org/): `choco install make`
+   - Or download from [GnuWin32](http://gnuwin32.sourceforge.net/packages/make.htm)
+   - Verify with: `make --version`
+
+3. **Visual C++ Runtime**
+   - Required for the IBM DB2 driver (included in wheel package)
+   - If not already installed, download the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+   - Or install Visual Studio Build Tools if you need to build from source:
+
+4. **Windows Long Paths Support**
+   - Required if your workspace is in a deep directory structure (like OneDrive)
+   - Enable via Group Policy or Registry:
+     ```powershell
+     # Run in Administrator PowerShell
+     Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1
+     ```
+   - Sign out and sign back in (or restart) after enabling
+
+### Windows-Specific Considerations
+
+When running on Windows, there are a few important considerations:
+
+1. **Path Length Limitations**
+   - Windows has a default 260-character path limit
+   - If your workspace is in a deep directory (e.g., OneDrive), you might hit this limit
+   - The Makefile automatically uses `%TEMP%\.venv-db2bug` for the virtual environment on Windows to avoid path issues
+   - Enable Windows long paths support (see prerequisites) if needed
+
+2. **Shell Commands**
+   - The Makefile includes Windows-specific commands for cleaning and container management
+   - Uses `rmdir /s /q` instead of `rm -rf`
+   - Redirects to `nul` instead of `/dev/null`
+
+3. **Virtual Environment Location**
+   - Default: `%TEMP%\.venv-db2bug` on Windows (shorter path)
+   - Unix/Linux: `.venv` in the project directory
+   - This location can be overridden by setting the `VENV` variable:
+     ```bash
+     make test VENV=path/to/venv
+     ```
+
+4. **IBM DB2 Driver Setup**
+   - The `ibm-db` wheel package includes the DB2 client library (`clidriver`)
+   - The Makefile automatically configures the runtime environment:
+     - Uses `scripts/run_with_db2.bat` to set up paths
+     - Sets `PATH` to include the clidriver bin directory
+     - Sets `IBM_DB_HOME` to the clidriver location
+     - Preloads DB2 native DLLs before importing Python modules
+   - Always use `make test` to run the harness (not `python -m scripts.repro_runner`)
+   
+   If you encounter DLL loading issues:
+   - Ensure you're using Python 3.9 or later
+   - Check that the wheel installed successfully (`pip list | findstr ibm-db`)
+   - Verify `clidriver` exists in `%TEMP%\.venv-db2bug\Lib\site-packages\clidriver`
+   - If using a custom location, update the `VENV` variable to match
+
 ## Quick Start
 
-```bash
+```powershell
+# Windows
+make test
+
+# Unix/Linux
 make test
 ```
 

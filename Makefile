@@ -1,7 +1,13 @@
 SHELL := /bin/sh
 
-VENV ?= .venv
-PYTHON ?= python3
+# Use shorter path for virtual environment on Windows to avoid path length issues
+ifeq ($(OS),Windows_NT)
+	VENV ?= $(TEMP)\.venv-db2bug
+else
+	VENV ?= .venv
+endif
+
+PYTHON ?= python
 
 SUPPORT_THREADS ?= 4
 SUPPORT_POOL ?= 4
@@ -35,7 +41,11 @@ $(PYTHON_BIN): requirements.txt
 	$(PYTHON_BIN) -m pip install -r requirements.txt
 
 test: install
+ifeq ($(OS),Windows_NT)
+	@scripts\run_with_db2.bat "$(PYTHON_BIN)" "scripts.repro_runner" "$(VENV)" "$(ARGS)"
+else
 	$(PYTHON_BIN) -m scripts.repro_runner $(ARGS)
+endif
 
 support-bundle: install
 	@if [ -z "$(CASE)" ]; then \
@@ -93,7 +103,15 @@ support-bundle: install
 	echo "Additional container logs saved to $$output_dir/docker-logs.txt"
 
 container-stop:
+ifeq ($(OS),Windows_NT)
+	-docker rm -f $(SUPPORT_CONTAINER) >nul 2>&1 || exit 0
+else
 	-docker rm -f $(SUPPORT_CONTAINER) >/dev/null 2>&1
+endif
 
 clean: container-stop
+ifeq ($(OS),Windows_NT)
+	if exist "$(VENV)" rmdir /s /q "$(VENV)"
+else
 	rm -rf $(VENV)
+endif
